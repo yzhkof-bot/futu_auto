@@ -20,20 +20,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 from src.strategies.top5_factor_strategy import Top5FactorStrategy
-
-# 纳斯达克100成分股
-NASDAQ100 = [
-    'AAPL', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'GOOG', 'META', 'TSLA', 'AVGO', 'COST',
-    'NFLX', 'TMUS', 'ASML', 'CSCO', 'ADBE', 'AMD', 'PEP', 'LIN', 'INTC', 'INTU',
-    'TXN', 'CMCSA', 'QCOM', 'AMGN', 'AMAT', 'HON', 'ISRG', 'BKNG', 'SBUX', 'VRTX',
-    'GILD', 'ADP', 'MDLZ', 'ADI', 'REGN', 'PANW', 'SNPS', 'LRCX', 'KLAC', 'CDNS',
-    'MU', 'MELI', 'PYPL', 'MAR', 'ORLY', 'MNST', 'CTAS', 'NXPI', 'MCHP', 'FTNT',
-    'ABNB', 'PCAR', 'KDP', 'AEP', 'PAYX', 'KHC', 'ODFL', 'CPRT', 'CHTR', 'ROST',
-    'IDXX', 'DXCM', 'FAST', 'AZN', 'MRNA', 'EA', 'CTSH', 'EXC', 'VRSK', 'CSGP',
-    'XEL', 'BKR', 'GEHC', 'FANG', 'TTWO', 'ANSS', 'BIIB', 'ON', 'DLTR', 'WBD',
-    'CDW', 'ZS', 'ILMN', 'MDB', 'TEAM', 'DDOG', 'GFS', 'WBA', 'LCID', 'SIRI',
-    'CEG', 'CRWD', 'DASH', 'SMCI', 'ARM', 'COIN', 'TTD', 'PDD', 'LULU', 'WDAY'
-]
+from src.stock_pool import NASDAQ100, BLUECHIP_NON_TECH, ALL_STOCKS, get_pool_info
 
 
 def scan_nasdaq100(min_factors: int = 5, days: int = 30):
@@ -63,7 +50,7 @@ def scan_nasdaq100(min_factors: int = 5, days: int = 30):
     scan_start = datetime.now() - timedelta(days=days)
     
     print(f"\n扫描范围: 最近 {days} 天")
-    print(f"扫描股票: {len(NASDAQ100)} 只")
+    print(f"扫描股票: {len(ALL_STOCKS)} 只 (纳斯达克100: {len(NASDAQ100)}, 蓝筹非科技: {len(BLUECHIP_NON_TECH)})")
     print("\n开始扫描...\n")
     
     strategy = Top5FactorStrategy(min_factors=min_factors)
@@ -72,8 +59,8 @@ def scan_nasdaq100(min_factors: int = 5, days: int = 30):
     symbol_buy_counts = {}
     recent_signals = []  # 最近的买点信号
     
-    for i, symbol in enumerate(NASDAQ100):
-        print(f"[{i+1}/{len(NASDAQ100)}] {symbol}...", end=' ')
+    for i, symbol in enumerate(ALL_STOCKS):
+        print(f"[{i+1}/{len(ALL_STOCKS)}] {symbol}...", end=' ')
         
         try:
             # 获取数据
@@ -190,9 +177,10 @@ def scan_nasdaq100(min_factors: int = 5, days: int = 30):
 def scan_today():
     """扫描今天的买点"""
     print("=" * 70)
-    print("纳斯达克100 - Top 5 因子策略 - 今日买点扫描")
+    print("全市场精选 - Top 5 因子策略 - 今日买点扫描")
     print("=" * 70)
     print("因子: MACD>0, ADX>25, MACD>Signal, 10日涨幅>5%, 均线多头排列")
+    print(f"股票池: 纳斯达克100 ({len(NASDAQ100)}) + 蓝筹非科技 ({len(BLUECHIP_NON_TECH)}) = {len(ALL_STOCKS)} 只")
     print("=" * 70)
     
     strategy = Top5FactorStrategy(min_factors=5)
@@ -202,7 +190,7 @@ def scan_today():
     today_signals = []
     
     print(f"\n扫描中...", end='')
-    for i, symbol in enumerate(NASDAQ100):
+    for i, symbol in enumerate(ALL_STOCKS):
         if i % 20 == 0:
             print(f" {i}", end='', flush=True)
         try:

@@ -272,31 +272,20 @@ class MultiSignalStrategy:
     
     def scan_nasdaq100(self) -> List[Tuple[str, Signal]]:
         """
-        扫描纳斯达克100所有股票，返回今天是买点的股票
+        扫描纳斯达克100 + 精选蓝筹股，返回今天是买点的股票
         
         Returns:
             [(股票代码, Signal对象), ...] 列表
         """
         import yfinance as yf
+        from src.stock_pool import ALL_STOCKS, get_pool_info
         
-        # 纳斯达克100成分股
-        nasdaq100 = [
-            'AAPL', 'MSFT', 'AMZN', 'NVDA', 'GOOGL', 'GOOG', 'META', 'TSLA', 'AVGO', 'COST',
-            'NFLX', 'TMUS', 'ASML', 'CSCO', 'ADBE', 'AMD', 'PEP', 'LIN', 'INTC', 'INTU',
-            'TXN', 'CMCSA', 'QCOM', 'AMGN', 'AMAT', 'HON', 'ISRG', 'BKNG', 'SBUX', 'VRTX',
-            'LRCX', 'ADP', 'GILD', 'ADI', 'MU', 'MDLZ', 'REGN', 'PANW', 'KLAC', 'SNPS',
-            'CDNS', 'MELI', 'MAR', 'PYPL', 'CSX', 'CRWD', 'ORLY', 'CTAS', 'NXPI', 'MNST',
-            'MRVL', 'PCAR', 'WDAY', 'ADSK', 'ABNB', 'CPRT', 'ROP', 'AEP', 'FTNT', 'PAYX',
-            'AZN', 'CHTR', 'ROST', 'KDP', 'ODFL', 'DXCM', 'KHC', 'FAST', 'TTD', 'MCHP',
-            'GEHC', 'VRSK', 'EA', 'CTSH', 'EXC', 'LULU', 'CSGP', 'FANG', 'IDXX', 'BKR',
-            'XEL', 'CCEP', 'ON', 'ANSS', 'TEAM', 'CDW', 'BIIB', 'ZS', 'GFS', 'DDOG',
-            'ILMN', 'WBD', 'MDB', 'MRNA', 'DLTR', 'CEG', 'SMCI', 'ARM', 'DASH', 'COIN'
-        ]
+        pool_info = get_pool_info()
         
         buy_signals = []
-        print(f"扫描纳斯达克100股票...")
+        print(f"扫描股票池: 纳斯达克100 ({pool_info['nasdaq100_count']}) + 蓝筹非科技 ({pool_info['bluechip_count']}) = {pool_info['total_count']} 只")
         
-        for i, ticker in enumerate(nasdaq100):
+        for i, ticker in enumerate(ALL_STOCKS):
             try:
                 is_buy, signal = self.check_ticker(ticker)
                 if is_buy:
@@ -307,7 +296,7 @@ class MultiSignalStrategy:
             
             # 进度显示
             if (i + 1) % 20 == 0:
-                print(f"  已扫描 {i + 1}/100...")
+                print(f"  已扫描 {i + 1}/{len(ALL_STOCKS)}...")
         
         print(f"\n扫描完成，共发现 {len(buy_signals)} 个买点")
         return buy_signals
