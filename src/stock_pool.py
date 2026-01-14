@@ -57,8 +57,102 @@ BLUECHIP_NON_TECH = [
     'NEE',   # NextEra - 清洁能源龙头
 ]
 
+# 道琼斯30成分股（排除与 NASDAQ100 重复的）
+# 重复的: AAPL, MSFT, AMZN, NVDA, INTC, CSCO, HON
+DOW30_EXCLUSIVE = [
+    # 金融
+    'JPM',   # 摩根大通
+    'GS',    # 高盛
+    'AXP',   # 美国运通
+    'TRV',   # 旅行者保险
+    # 医疗健康
+    'UNH',   # 联合健康
+    'JNJ',   # 强生
+    'MRK',   # 默沙东
+    'AMGN',  # 安进 (也在 NASDAQ100，但保留)
+    # 消费
+    'WMT',   # 沃尔玛
+    'HD',    # 家得宝
+    'PG',    # 宝洁
+    'MCD',   # 麦当劳
+    'NKE',   # 耐克
+    'KO',    # 可口可乐
+    'DIS',   # 迪士尼
+    # 工业
+    'CAT',   # 卡特彼勒
+    'BA',    # 波音
+    'MMM',   # 3M
+    'DOW',   # 陶氏化学
+    # 能源
+    'CVX',   # 雪佛龙
+    # 通信
+    'VZ',    # 威瑞森
+    # 其他
+    'IBM',   # IBM
+    'CRM',   # Salesforce
+    'WBA',   # 沃尔格林
+    'SHW',   # 宣伟涂料
+]
+
+# S&P500 非科技龙头（排除 NASDAQ100 和 DOW30 重复）
+SP500_NON_TECH = [
+    # 金融
+    'BAC',   # 美国银行
+    'WFC',   # 富国银行
+    'C',     # 花旗
+    'MS',    # 摩根士丹利
+    'BLK',   # 贝莱德
+    'SCHW',  # 嘉信理财
+    'BRK-B', # 伯克希尔
+    # 医疗
+    'LLY',   # 礼来
+    'ABBV',  # 艾伯维
+    'PFE',   # 辉瑞
+    'TMO',   # 赛默飞
+    'ABT',   # 雅培
+    'DHR',   # 丹纳赫
+    'BMY',   # 百时美施贵宝
+    # 消费
+    'LOW',   # 劳氏
+    'TGT',   # 塔吉特
+    'SBUX',  # 星巴克 (也在 NASDAQ100)
+    'TJX',   # TJX
+    'CMG',   # Chipotle
+    'YUM',   # 百胜餐饮
+    # 工业
+    'UNP',   # 联合太平洋
+    'RTX',   # 雷神
+    'LMT',   # 洛克希德马丁
+    'GE',    # 通用电气
+    'DE',    # 迪尔
+    'FDX',   # 联邦快递
+    'UPS',   # UPS
+    # 能源
+    'XOM',   # 埃克森美孚
+    'COP',   # 康菲石油
+    'SLB',   # 斯伦贝谢
+    'EOG',   # EOG资源
+    # 公用事业
+    'NEE',   # NextEra
+    'DUK',   # 杜克能源
+    'SO',    # 南方公司
+    # 材料
+    'LIN',   # 林德 (也在 NASDAQ100)
+    'APD',   # 空气化工
+    'FCX',   # 自由港麦克莫兰
+    # 房地产
+    'PLD',   # 普洛斯
+    'AMT',   # 美国电塔
+    'EQIX',  # Equinix
+]
+
 # 合并股票池（去重）
 ALL_STOCKS = list(dict.fromkeys(NASDAQ100 + BLUECHIP_NON_TECH))
+
+# 样本外验证池：道琼斯 + S&P500非科技（排除 NASDAQ100 重复）
+_nasdaq_set = set(NASDAQ100)
+OUT_OF_SAMPLE_POOL = [s for s in (DOW30_EXCLUSIVE + SP500_NON_TECH) if s not in _nasdaq_set]
+OUT_OF_SAMPLE_POOL = list(dict.fromkeys(OUT_OF_SAMPLE_POOL))  # 去重
 
 
 def get_stock_pool(pool_type: str = 'all') -> list:
@@ -66,7 +160,7 @@ def get_stock_pool(pool_type: str = 'all') -> list:
     获取股票池
     
     Args:
-        pool_type: 'nasdaq100' | 'bluechip' | 'all'
+        pool_type: 'nasdaq100' | 'bluechip' | 'dow30' | 'sp500_non_tech' | 'out_of_sample' | 'all'
     
     Returns:
         股票代码列表
@@ -75,6 +169,12 @@ def get_stock_pool(pool_type: str = 'all') -> list:
         return NASDAQ100.copy()
     elif pool_type == 'bluechip':
         return BLUECHIP_NON_TECH.copy()
+    elif pool_type == 'dow30':
+        return DOW30_EXCLUSIVE.copy()
+    elif pool_type == 'sp500_non_tech':
+        return SP500_NON_TECH.copy()
+    elif pool_type == 'out_of_sample':
+        return OUT_OF_SAMPLE_POOL.copy()
     else:
         return ALL_STOCKS.copy()
 
@@ -84,5 +184,8 @@ def get_pool_info() -> dict:
     return {
         'nasdaq100_count': len(NASDAQ100),
         'bluechip_count': len(BLUECHIP_NON_TECH),
+        'dow30_count': len(DOW30_EXCLUSIVE),
+        'sp500_non_tech_count': len(SP500_NON_TECH),
+        'out_of_sample_count': len(OUT_OF_SAMPLE_POOL),
         'total_count': len(ALL_STOCKS),
     }
