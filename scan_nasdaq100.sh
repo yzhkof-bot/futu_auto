@@ -18,4 +18,4 @@ python scan_nasdaq100_top5.py
 
 
 
-mul(neg(sub(delay5(min5(volume)), mean10(std10(return_5)))), mean5(neg(std10(min5(close)))))
+#mul(neg(sub(delay5(min5(volume)), mean10(std10(return_5)))), mean5(neg(std10(min5(close)))))
