@@ -29,7 +29,7 @@ except ImportError:
     GPLEARN_AVAILABLE = False
     print("警告: gplearn 未安装，请运行: pip install gplearn")
 
-from .data_manager import PanelDataManager
+from .data_manager import PanelDataManager, HistoricalDataCache
 from .factor_engine import (
     ts_delay, ts_delta, ts_mean, ts_std, ts_max, ts_min, ts_rank, ts_sum,
     ts_zscore, cs_rank, cs_zscore, preprocess_factor
@@ -664,7 +664,8 @@ class GPAlphaMinerV2:
                   start_date: str = None,
                   end_date: str = None,
                   train_ratio: float = 0.7,
-                  use_cache: bool = True) -> 'GPAlphaMinerV2':
+                  use_cache: bool = True,
+                  use_historical_cache: bool = False) -> 'GPAlphaMinerV2':
         """
         加载数据
         
@@ -673,7 +674,8 @@ class GPAlphaMinerV2:
             start_date: 开始日期
             end_date: 结束日期
             train_ratio: 训练集比例
-            use_cache: 是否使用缓存
+            use_cache: 是否使用缓存（仅 use_historical_cache=False 时有效）
+            use_historical_cache: 是否使用 HistoricalDataCache 缓存的历史数据
         
         Returns:
             self
@@ -682,15 +684,28 @@ class GPAlphaMinerV2:
         print("加载数据")
         print("=" * 60)
         
-        # 获取数据
-        self.data_manager = PanelDataManager()
-        self.data_manager.fetch(
-            pool_type=pool_type,
-            start_date=start_date,
-            end_date=end_date,
-            use_cache=use_cache,
-            verbose=True
-        )
+        if use_historical_cache:
+            # 使用 HistoricalDataCache 的缓存数据
+            print("使用 HistoricalDataCache 缓存数据")
+            cache = HistoricalDataCache()
+            
+            # 优先使用全部历史数据缓存，然后按日期筛选
+            self.data_manager = cache.get_all_history(
+                pool_type=pool_type,
+                start_date=start_date,
+                end_date=end_date,
+                verbose=True
+            )
+        else:
+            # 原有方式：实时下载
+            self.data_manager = PanelDataManager()
+            self.data_manager.fetch(
+                pool_type=pool_type,
+                start_date=start_date,
+                end_date=end_date,
+                use_cache=use_cache,
+                verbose=True
+            )
         
         # 切分训练集/测试集
         self.train_dm, self.test_dm = self.data_manager.split_train_test(train_ratio)
@@ -1097,7 +1112,10 @@ def quick_mine(pool_type: str = 'nasdaq100',
                population_size: int = 300,
                generations: int = 15,
                forward_days: int = 5,
-               top_n: int = 5) -> List[Dict]:
+               top_n: int = 5,
+               start_date: str = None,
+               end_date: str = None,
+               use_historical_cache: bool = True) -> List[Dict]:
     """
     快速挖掘入口
     
@@ -1107,6 +1125,9 @@ def quick_mine(pool_type: str = 'nasdaq100',
         generations: 进化代数
         forward_days: 预测天数
         top_n: 返回因子数
+        start_date: 开始日期
+        end_date: 结束日期
+        use_historical_cache: 是否使用 HistoricalDataCache 缓存数据
     
     Returns:
         最佳因子列表
@@ -1117,7 +1138,13 @@ def quick_mine(pool_type: str = 'nasdaq100',
         verbose=1
     )
     
-    miner.load_data(pool_type=pool_type, train_ratio=0.7)
+    miner.load_data(
+        pool_type=pool_type,
+        start_date=start_date,
+        end_date=end_date,
+        train_ratio=0.7,
+        use_historical_cache=use_historical_cache
+    )
     factors = miner.mine(forward_days=forward_days, top_n=top_n)
     miner.print_summary(top_n)
     
@@ -1125,11 +1152,14 @@ def quick_mine(pool_type: str = 'nasdaq100',
 
 
 if __name__ == '__main__':
-    # 测试
+    # 训练：使用 2011-2024 年历史数据
     factors = quick_mine(
-        pool_type='nasdaq100',
+        pool_type='all',
         population_size=200,
         generations=10,
         forward_days=5,
-        top_n=5
+        top_n=5,
+        start_date='2011-01-01',
+        end_date='2024-12-31',
+        use_historical_cache=True  # 使用缓存数据
     )

@@ -13,6 +13,7 @@ from typing import List, Dict, Optional, Tuple
 import os
 import pickle
 import warnings
+import hashlib
 
 warnings.filterwarnings('ignore')
 
@@ -20,6 +21,551 @@ warnings.filterwarnings('ignore')
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.stock_pool import get_stock_pool
+
+
+class HistoricalDataCache:
+    """
+    历史数据缓存管理器
+    
+    特点：
+    1. 精确到个股缓存，每只股票单独存储
+    2. 支持增量下载，只下载缺失的股票
+    3. 一次下载，永久使用
+    
+    使用方法：
+        cache = HistoricalDataCache()
+        # 首次运行会下载，后续直接从缓存读取
+        dm = cache.get_data(start_date='2011-01-01', end_date='2015-12-31')
+    """
+    
+    def __init__(self, cache_dir: str = None):
+        """
+        初始化
+        
+        Args:
+            cache_dir: 缓存目录，默认 gp_alpha/.historical_cache
+        """
+        if cache_dir is None:
+            cache_dir = os.path.join(os.path.dirname(__file__), '.historical_cache')
+        self.cache_dir = cache_dir
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # 元数据文件
+        self.meta_path = os.path.join(cache_dir, '_metadata.pkl')
+        self.metadata = self._load_metadata()
+    
+    def _load_metadata(self) -> Dict:
+        """加载元数据"""
+        if os.path.exists(self.meta_path):
+            with open(self.meta_path, 'rb') as f:
+                return pickle.load(f)
+        return {'cached_symbols': {}, 'version': '1.0'}
+    
+    def _save_metadata(self):
+        """保存元数据"""
+        with open(self.meta_path, 'wb') as f:
+            pickle.dump(self.metadata, f)
+    
+    def _get_cache_key(self, symbol: str, start_date: str, end_date: str) -> str:
+        """生成缓存文件名"""
+        # 使用日期范围作为 key，确保相同日期范围的数据可以复用
+        key = f"{symbol}_{start_date}_{end_date}"
+        return hashlib.md5(key.encode()).hexdigest()[:12]
+    
+    def _get_symbol_cache_path(self, symbol: str, start_date: str, end_date: str) -> str:
+        """获取个股缓存路径"""
+        cache_key = self._get_cache_key(symbol, start_date, end_date)
+        return os.path.join(self.cache_dir, f"{symbol}_{cache_key}.pkl")
+    
+    def _is_cached(self, symbol: str, start_date: str, end_date: str) -> bool:
+        """检查个股是否已缓存"""
+        cache_path = self._get_symbol_cache_path(symbol, start_date, end_date)
+        return os.path.exists(cache_path)
+    
+    def _save_symbol_data(self, symbol: str, data: pd.DataFrame, start_date: str, end_date: str):
+        """保存个股数据"""
+        cache_path = self._get_symbol_cache_path(symbol, start_date, end_date)
+        with open(cache_path, 'wb') as f:
+            pickle.dump(data, f)
+        
+        # 更新元数据
+        cache_key = f"{start_date}_{end_date}"
+        if cache_key not in self.metadata['cached_symbols']:
+            self.metadata['cached_symbols'][cache_key] = []
+        if symbol not in self.metadata['cached_symbols'][cache_key]:
+            self.metadata['cached_symbols'][cache_key].append(symbol)
+        self._save_metadata()
+    
+    def _load_symbol_data(self, symbol: str, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+        """加载个股数据"""
+        cache_path = self._get_symbol_cache_path(symbol, start_date, end_date)
+        if os.path.exists(cache_path):
+            with open(cache_path, 'rb') as f:
+                return pickle.load(f)
+        return None
+    
+    def download_all_history(self,
+                             symbols: List[str] = None,
+                             pool_type: str = 'all',
+                             force_download: bool = False,
+                             verbose: bool = True,
+                             delay_seconds: float = 0.5) -> Dict[str, pd.DataFrame]:
+        """
+        下载股票的全部历史数据（从上市到现在）
+        
+        使用 period='max' 获取所有可用数据，不管股票上市时间长短
+        
+        Args:
+            symbols: 股票列表，None 则使用股票池
+            pool_type: 股票池类型
+            force_download: 是否强制重新下载
+            verbose: 是否打印进度
+            delay_seconds: 每次下载间隔秒数
+        
+        Returns:
+            Dict[symbol, DataFrame] 个股数据字典
+        """
+        import time
+        
+        # 使用特殊的日期标记表示全部历史
+        start_date = 'MAX'
+        end_date = 'MAX'
+        
+        # 获取股票列表
+        if symbols is None:
+            symbols = get_stock_pool(pool_type)
+        
+        if verbose:
+            print(f"=== 全部历史数据下载器 ===")
+            print(f"模式: period='max' (下载所有可用历史)")
+            print(f"股票池: {len(symbols)} 只")
+        
+        # 检查哪些股票需要下载
+        cached_symbols = []
+        missing_symbols = []
+        
+        for symbol in symbols:
+            if not force_download and self._is_cached(symbol, start_date, end_date):
+                cached_symbols.append(symbol)
+            else:
+                missing_symbols.append(symbol)
+        
+        if verbose:
+            print(f"已缓存: {len(cached_symbols)} 只")
+            print(f"需下载: {len(missing_symbols)} 只")
+        
+        # 逐个下载
+        if missing_symbols:
+            if verbose:
+                print(f"\n开始下载 {len(missing_symbols)} 只股票的全部历史...")
+                print(f"(每只间隔 {delay_seconds}s)")
+            
+            success_count = 0
+            fail_count = 0
+            
+            for idx, symbol in enumerate(missing_symbols):
+                if verbose and (idx + 1) % 10 == 0:
+                    print(f"  进度: {idx + 1}/{len(missing_symbols)} ({success_count} 成功, {fail_count} 失败)")
+                
+                try:
+                    ticker = yf.Ticker(symbol)
+                    # period='max' 获取所有历史数据
+                    data = ticker.history(period='max', auto_adjust=False)
+                    
+                    if not data.empty and len(data) > 50:
+                        symbol_data = pd.DataFrame({
+                            'Open': data['Open'],
+                            'High': data['High'],
+                            'Low': data['Low'],
+                            'Close': data['Close'],
+                            'Volume': data['Volume'],
+                        })
+                        self._save_symbol_data(symbol, symbol_data, start_date, end_date)
+                        success_count += 1
+                        
+                        # 显示数据范围
+                        first_date = data.index[0].strftime('%Y-%m-%d')
+                        last_date = data.index[-1].strftime('%Y-%m-%d')
+                        if verbose:
+                            print(f"    ✓ {symbol}: {len(data)} 天 ({first_date} ~ {last_date})")
+                    else:
+                        fail_count += 1
+                        if verbose:
+                            print(f"    ✗ {symbol}: 数据不足")
+                            
+                except Exception as e:
+                    fail_count += 1
+                    if verbose:
+                        print(f"    ✗ {symbol}: {str(e)[:50]}")
+                
+                time.sleep(delay_seconds)
+            
+            if verbose:
+                print(f"\n下载完成: {success_count} 成功, {fail_count} 失败")
+        
+        # 加载所有缓存数据
+        result = {}
+        for symbol in symbols:
+            data = self._load_symbol_data(symbol, start_date, end_date)
+            if data is not None:
+                result[symbol] = data
+        
+        if verbose:
+            print(f"\n=== 缓存完成 ===")
+            print(f"有效股票: {len(result)} 只")
+            print(f"缓存目录: {self.cache_dir}")
+        
+        return result
+    
+    def get_all_history(self,
+                        symbols: List[str] = None,
+                        pool_type: str = 'all',
+                        start_date: str = None,
+                        end_date: str = None,
+                        min_data_days: int = 200,
+                        verbose: bool = True) -> 'PanelDataManager':
+        """
+        获取全部历史数据，支持按日期范围筛选
+        
+        Args:
+            symbols: 股票列表
+            pool_type: 股票池类型
+            start_date: 筛选开始日期（可选，从缓存中筛选）
+            end_date: 筛选结束日期（可选，从缓存中筛选）
+            min_data_days: 最少数据天数
+            verbose: 是否打印进度
+        
+        Returns:
+            PanelDataManager 实例
+        """
+        # 下载/加载全部历史数据
+        stock_data = self.download_all_history(
+            symbols=symbols,
+            pool_type=pool_type,
+            verbose=verbose
+        )
+        
+        if not stock_data:
+            raise ValueError("没有获取到任何数据")
+        
+        # 按日期筛选
+        if start_date or end_date:
+            filtered_data = {}
+            for symbol, data in stock_data.items():
+                # 转换索引为日期（去掉时区）
+                data.index = pd.to_datetime(data.index).tz_localize(None)
+                
+                if start_date:
+                    data = data[data.index >= start_date]
+                if end_date:
+                    data = data[data.index <= end_date]
+                
+                if len(data) > 0:
+                    filtered_data[symbol] = data
+            stock_data = filtered_data
+        
+        # 构建 Panel 数据
+        dm = PanelDataManager()
+        dm.start_date = start_date or 'MAX'
+        dm.end_date = end_date or 'MAX'
+        
+        open_dict = {}
+        high_dict = {}
+        low_dict = {}
+        close_dict = {}
+        volume_dict = {}
+        
+        for symbol, data in stock_data.items():
+            if data['Close'].notna().sum() < min_data_days:
+                continue
+            open_dict[symbol] = data['Open']
+            high_dict[symbol] = data['High']
+            low_dict[symbol] = data['Low']
+            close_dict[symbol] = data['Close']
+            volume_dict[symbol] = data['Volume']
+        
+        if not close_dict:
+            raise ValueError("没有满足最少数据天数要求的股票")
+        
+        dm.open_panel = pd.DataFrame(open_dict)
+        dm.high_panel = pd.DataFrame(high_dict)
+        dm.low_panel = pd.DataFrame(low_dict)
+        dm.close_panel = pd.DataFrame(close_dict)
+        dm.volume_panel = pd.DataFrame(volume_dict)
+        
+        # 对齐日期索引
+        all_dates = dm.close_panel.index.union(dm.open_panel.index)
+        dm.open_panel = dm.open_panel.reindex(all_dates)
+        dm.high_panel = dm.high_panel.reindex(all_dates)
+        dm.low_panel = dm.low_panel.reindex(all_dates)
+        dm.close_panel = dm.close_panel.reindex(all_dates)
+        dm.volume_panel = dm.volume_panel.reindex(all_dates)
+        
+        dm.return_panel = dm.close_panel.pct_change()
+        dm.symbols = list(dm.close_panel.columns)
+        dm.dates = dm.close_panel.index
+        
+        if verbose:
+            print(f"\n数据加载完成:")
+            print(f"  有效股票: {len(dm.symbols)} 只")
+            print(f"  数据天数: {len(dm.dates)} 天")
+            if len(dm.dates) > 0:
+                print(f"  日期范围: {dm.dates[0].strftime('%Y-%m-%d')} ~ {dm.dates[-1].strftime('%Y-%m-%d')}")
+        
+        return dm
+
+    def download_and_cache(self, 
+                           symbols: List[str] = None,
+                           start_date: str = '2011-01-01',
+                           end_date: str = '2015-12-31',
+                           pool_type: str = 'all',
+                           force_download: bool = False,
+                           verbose: bool = True,
+                           retry_count: int = 3,
+                           delay_seconds: float = 0.5) -> Dict[str, pd.DataFrame]:
+        """
+        下载并缓存历史数据
+        
+        Args:
+            symbols: 股票列表，None 则使用股票池
+            start_date: 开始日期
+            end_date: 结束日期
+            pool_type: 股票池类型
+            force_download: 是否强制重新下载
+            verbose: 是否打印进度
+            retry_count: 下载失败重试次数
+            delay_seconds: 每次下载间隔秒数（避免限速）
+        
+        Returns:
+            Dict[symbol, DataFrame] 个股数据字典
+        """
+        import time
+        
+        # 获取股票列表
+        if symbols is None:
+            symbols = get_stock_pool(pool_type)
+        
+        if verbose:
+            print(f"=== 历史数据缓存管理器 ===")
+            print(f"日期范围: {start_date} ~ {end_date}")
+            print(f"股票池: {len(symbols)} 只")
+        
+        # 检查哪些股票需要下载
+        cached_symbols = []
+        missing_symbols = []
+        
+        for symbol in symbols:
+            if not force_download and self._is_cached(symbol, start_date, end_date):
+                cached_symbols.append(symbol)
+            else:
+                missing_symbols.append(symbol)
+        
+        if verbose:
+            print(f"已缓存: {len(cached_symbols)} 只")
+            print(f"需下载: {len(missing_symbols)} 只")
+        
+        # 逐个下载缺失的股票（避免限速）
+        if missing_symbols:
+            if verbose:
+                print(f"\n开始逐个下载 {len(missing_symbols)} 只股票...")
+                print(f"(每只间隔 {delay_seconds}s，预计 {len(missing_symbols) * delay_seconds / 60:.1f} 分钟)")
+            
+            success_count = 0
+            fail_count = 0
+            
+            for idx, symbol in enumerate(missing_symbols):
+                if verbose and (idx + 1) % 10 == 0:
+                    print(f"  进度: {idx + 1}/{len(missing_symbols)} ({success_count} 成功, {fail_count} 失败)")
+                
+                # 重试机制
+                for attempt in range(retry_count):
+                    try:
+                        # 单股票下载
+                        ticker = yf.Ticker(symbol)
+                        data = ticker.history(start=start_date, end=end_date, auto_adjust=False)
+                        
+                        if not data.empty and len(data) > 100:
+                            # 标准化列名
+                            symbol_data = pd.DataFrame({
+                                'Open': data['Open'],
+                                'High': data['High'],
+                                'Low': data['Low'],
+                                'Close': data['Close'],
+                                'Volume': data['Volume'],
+                            })
+                            self._save_symbol_data(symbol, symbol_data, start_date, end_date)
+                            success_count += 1
+                            if verbose:
+                                print(f"    ✓ {symbol}: {len(data)} 天")
+                            break
+                        else:
+                            if attempt == retry_count - 1:
+                                fail_count += 1
+                                if verbose:
+                                    print(f"    ✗ {symbol}: 数据不足")
+                                    
+                    except Exception as e:
+                        if attempt < retry_count - 1:
+                            time.sleep(delay_seconds * 2)  # 失败后等待更长时间
+                        else:
+                            fail_count += 1
+                            if verbose:
+                                print(f"    ✗ {symbol}: {str(e)[:50]}")
+                
+                # 下载间隔
+                time.sleep(delay_seconds)
+            
+            if verbose:
+                print(f"\n下载完成: {success_count} 成功, {fail_count} 失败")
+        
+        # 加载所有缓存数据
+        result = {}
+        for symbol in symbols:
+            data = self._load_symbol_data(symbol, start_date, end_date)
+            if data is not None:
+                result[symbol] = data
+        
+        if verbose:
+            print(f"\n=== 缓存完成 ===")
+            print(f"有效股票: {len(result)} 只")
+            print(f"缓存目录: {self.cache_dir}")
+        
+        return result
+    
+    def get_data(self,
+                 symbols: List[str] = None,
+                 start_date: str = '2011-01-01',
+                 end_date: str = '2015-12-31',
+                 pool_type: str = 'all',
+                 min_data_days: int = 200,
+                 verbose: bool = True) -> 'PanelDataManager':
+        """
+        获取数据，自动使用缓存
+        
+        Args:
+            symbols: 股票列表
+            start_date: 开始日期
+            end_date: 结束日期
+            pool_type: 股票池类型
+            min_data_days: 最少数据天数
+            verbose: 是否打印进度
+        
+        Returns:
+            PanelDataManager 实例
+        """
+        # 下载/加载数据
+        stock_data = self.download_and_cache(
+            symbols=symbols,
+            start_date=start_date,
+            end_date=end_date,
+            pool_type=pool_type,
+            verbose=verbose
+        )
+        
+        if not stock_data:
+            raise ValueError("没有获取到任何数据")
+        
+        # 构建 Panel 数据
+        dm = PanelDataManager()
+        dm.start_date = start_date
+        dm.end_date = end_date
+        
+        # 合并所有股票数据
+        open_dict = {}
+        high_dict = {}
+        low_dict = {}
+        close_dict = {}
+        volume_dict = {}
+        
+        for symbol, data in stock_data.items():
+            # 过滤数据不足的股票
+            if data['Close'].notna().sum() < min_data_days:
+                continue
+            open_dict[symbol] = data['Open']
+            high_dict[symbol] = data['High']
+            low_dict[symbol] = data['Low']
+            close_dict[symbol] = data['Close']
+            volume_dict[symbol] = data['Volume']
+        
+        if not close_dict:
+            raise ValueError("没有满足最少数据天数要求的股票")
+        
+        # 构建 DataFrame
+        dm.open_panel = pd.DataFrame(open_dict)
+        dm.high_panel = pd.DataFrame(high_dict)
+        dm.low_panel = pd.DataFrame(low_dict)
+        dm.close_panel = pd.DataFrame(close_dict)
+        dm.volume_panel = pd.DataFrame(volume_dict)
+        
+        # 对齐日期索引
+        all_dates = dm.close_panel.index.union(dm.open_panel.index)
+        dm.open_panel = dm.open_panel.reindex(all_dates)
+        dm.high_panel = dm.high_panel.reindex(all_dates)
+        dm.low_panel = dm.low_panel.reindex(all_dates)
+        dm.close_panel = dm.close_panel.reindex(all_dates)
+        dm.volume_panel = dm.volume_panel.reindex(all_dates)
+        
+        # 计算收益率
+        dm.return_panel = dm.close_panel.pct_change()
+        
+        # 更新元数据
+        dm.symbols = list(dm.close_panel.columns)
+        dm.dates = dm.close_panel.index
+        
+        if verbose:
+            print(f"\n数据加载完成:")
+            print(f"  有效股票: {len(dm.symbols)} 只")
+            print(f"  数据天数: {len(dm.dates)} 天")
+        
+        return dm
+    
+    def get_cached_info(self) -> Dict:
+        """获取缓存信息"""
+        info = {
+            'cache_dir': self.cache_dir,
+            'date_ranges': {},
+        }
+        
+        for date_range, symbols in self.metadata.get('cached_symbols', {}).items():
+            info['date_ranges'][date_range] = len(symbols)
+        
+        # 计算缓存大小
+        total_size = 0
+        for f in os.listdir(self.cache_dir):
+            fp = os.path.join(self.cache_dir, f)
+            if os.path.isfile(fp):
+                total_size += os.path.getsize(fp)
+        info['total_size_mb'] = round(total_size / 1024 / 1024, 2)
+        
+        return info
+    
+    def clear_cache(self, date_range: str = None):
+        """
+        清除缓存
+        
+        Args:
+            date_range: 指定日期范围 (如 '2011-01-01_2015-12-31')，None 则清除所有
+        """
+        if date_range is None:
+            # 清除所有
+            import shutil
+            shutil.rmtree(self.cache_dir)
+            os.makedirs(self.cache_dir, exist_ok=True)
+            self.metadata = {'cached_symbols': {}, 'version': '1.0'}
+            self._save_metadata()
+            print("已清除所有缓存")
+        else:
+            # 清除指定日期范围
+            if date_range in self.metadata.get('cached_symbols', {}):
+                symbols = self.metadata['cached_symbols'][date_range]
+                start_date, end_date = date_range.split('_')
+                for symbol in symbols:
+                    cache_path = self._get_symbol_cache_path(symbol, start_date, end_date)
+                    if os.path.exists(cache_path):
+                        os.remove(cache_path)
+                del self.metadata['cached_symbols'][date_range]
+                self._save_metadata()
+                print(f"已清除 {date_range} 的缓存")
 
 
 class PanelDataManager:
@@ -429,15 +975,66 @@ class PanelDataManager:
 
 
 if __name__ == '__main__':
-    # 测试
-    dm = PanelDataManager()
-    dm.fetch(pool_type='nasdaq100', use_cache=True)
+    import argparse
     
-    print("\n数据信息:")
-    print(dm.info())
+    parser = argparse.ArgumentParser(description='数据管理器测试')
+    parser.add_argument('--mode', type=str, default='historical', 
+                        choices=['historical', 'panel', 'info'],
+                        help='运行模式: historical=历史缓存, panel=面板数据, info=缓存信息')
+    parser.add_argument('--start', type=str, default='2011-01-01', help='开始日期')
+    parser.add_argument('--end', type=str, default='2015-12-31', help='结束日期')
+    parser.add_argument('--pool', type=str, default='all', help='股票池类型')
+    parser.add_argument('--force', action='store_true', help='强制重新下载')
     
-    print("\n收盘价面板 (前5行, 前5列):")
-    print(dm.close_panel.iloc[:5, :5])
+    args = parser.parse_args()
     
-    print("\n未来1日收益 (前5行, 前5列):")
-    print(dm.get_forward_return(1).iloc[:5, :5])
+    if args.mode == 'historical':
+        # 测试历史数据缓存
+        print("=" * 60)
+        print("历史数据缓存测试")
+        print("=" * 60)
+        
+        cache = HistoricalDataCache()
+        
+        # 获取数据（首次会下载，后续从缓存读取）
+        dm = cache.get_data(
+            start_date=args.start,
+            end_date=args.end,
+            pool_type=args.pool,
+            verbose=True
+        )
+        
+        print("\n" + "=" * 60)
+        print("数据信息:")
+        print(dm.info())
+        
+        print("\n收盘价面板 (前5行, 前5列):")
+        print(dm.close_panel.iloc[:5, :5])
+        
+        print("\n缓存信息:")
+        print(cache.get_cached_info())
+        
+    elif args.mode == 'panel':
+        # 原有的 Panel 数据测试
+        dm = PanelDataManager()
+        dm.fetch(pool_type='nasdaq100', use_cache=True)
+        
+        print("\n数据信息:")
+        print(dm.info())
+        
+        print("\n收盘价面板 (前5行, 前5列):")
+        print(dm.close_panel.iloc[:5, :5])
+        
+        print("\n未来1日收益 (前5行, 前5列):")
+        print(dm.get_forward_return(1).iloc[:5, :5])
+        
+    elif args.mode == 'info':
+        # 查看缓存信息
+        cache = HistoricalDataCache()
+        info = cache.get_cached_info()
+        print("缓存信息:")
+        print(f"  缓存目录: {info['cache_dir']}")
+        print(f"  缓存大小: {info['total_size_mb']} MB")
+        print("  日期范围:")
+        for date_range, count in info['date_ranges'].items():
+            print(f"    {date_range}: {count} 只股票")
