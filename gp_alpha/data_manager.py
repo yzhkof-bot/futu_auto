@@ -622,35 +622,45 @@ class PanelDataManager:
         self.start_date: str = None
         self.end_date: str = None
     
-    def _fetch_macro_data(self, start_date: str, end_date: str, verbose: bool = True) -> Dict[str, pd.Series]:
+    def _fetch_macro_data(self, start_date: str, end_date: str, verbose: bool = True, refresh: bool = False) -> Dict[str, pd.Series]:
         """
         获取宏观指标数据
         
+        注意：默认使用缓存，只有 refresh=True 时才重新下载。
+        使用 period='max' 下载全部历史数据，然后按需截取日期范围。
+        
         Args:
-            start_date: 开始日期
-            end_date: 结束日期
+            start_date: 开始日期（仅用于返回数据截取）
+            end_date: 结束日期（仅用于返回数据截取）
             verbose: 是否打印进度
+            refresh: 是否强制刷新缓存（默认 False，只用缓存）
         
         Returns:
             Dict[name, Series] 宏观数据字典
         """
-        macro_cache_path = os.path.join(self.cache_dir, f"macro_{start_date}_{end_date}.pkl")
+        macro_cache_path = os.path.join(self.cache_dir, f"macro_all_history.pkl")
         
-        # 尝试从缓存加载
-        if os.path.exists(macro_cache_path):
+        macro_data = {}
+        
+        # 默认使用缓存，除非 refresh=True
+        if os.path.exists(macro_cache_path) and not refresh:
             if verbose:
                 print("  加载宏观数据缓存...")
             with open(macro_cache_path, 'rb') as f:
-                return pickle.load(f)
+                macro_data = pickle.load(f)
+            # 按日期截取返回
+            return {name: s[(s.index >= start_date) & (s.index <= end_date)] 
+                    for name, s in macro_data.items()}
         
+        # 缓存不存在或需要刷新
         if verbose:
-            print("  下载宏观指标数据...")
+            print("  下载宏观指标数据 (period='max', 全部历史)...")
         
-        macro_data = {}
         symbols_list = list(self.MACRO_SYMBOLS.keys())
         
         try:
-            data = yf.download(symbols_list, start=start_date, end=end_date, progress=False)
+            # 使用 period='max' 下载全部可用历史数据
+            data = yf.download(symbols_list, period='max', progress=False)
             
             if not data.empty:
                 for symbol, name in self.MACRO_SYMBOLS.items():
@@ -671,12 +681,14 @@ class PanelDataManager:
             if verbose:
                 print(f"  宏观数据下载失败: {e}")
         
-        # 保存缓存
+        # 保存全历史缓存
         if macro_data:
             with open(macro_cache_path, 'wb') as f:
                 pickle.dump(macro_data, f)
         
-        return macro_data
+        # 按日期截取返回
+        return {name: s[(s.index >= start_date) & (s.index <= end_date)] 
+                for name, s in macro_data.items()}
     
     def fetch(self, 
               symbols: List[str] = None,
@@ -684,28 +696,33 @@ class PanelDataManager:
               end_date: str = None,
               pool_type: str = 'all',
               use_cache: bool = True,
+              refresh: bool = False,
               min_data_days: int = 200,
               verbose: bool = True) -> 'PanelDataManager':
         """
         批量获取股票数据
         
+        注意：默认使用缓存，只有 refresh=True 时才重新下载。
+        使用 period='max' 下载全部历史数据，然后按需截取日期范围。
+        
         Args:
             symbols: 股票列表，None 则使用股票池
-            start_date: 开始日期
-            end_date: 结束日期
+            start_date: 开始日期（仅用于返回数据截取，默认10年前）
+            end_date: 结束日期（仅用于返回数据截取，默认今天）
             pool_type: 股票池类型 ('nasdaq100', 'bluechip', 'all')
-            use_cache: 是否使用缓存
+            use_cache: 是否使用缓存（已废弃，保留兼容性）
+            refresh: 是否强制刷新缓存（默认 False，只用缓存不下载）
             min_data_days: 最少数据天数，过滤数据不足的股票
             verbose: 是否打印进度
         
         Returns:
             self (链式调用)
         """
-        # 默认日期
+        # 用户请求的日期范围（用于最后截取）
         if end_date is None:
             end_date = datetime.now().strftime('%Y-%m-%d')
         if start_date is None:
-            start_date = (datetime.now() - timedelta(days=3*365)).strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=10*365)).strftime('%Y-%m-%d')
         
         self.start_date = start_date
         self.end_date = end_date
@@ -718,92 +735,117 @@ class PanelDataManager:
             print(f"获取数据: {len(symbols)} 只股票")
             print(f"日期范围: {start_date} ~ {end_date}")
         
-        # 检查缓存
-        cache_key = f"panel_{pool_type}_{start_date}_{end_date}"
+        # 使用固定的全历史缓存键
+        cache_key = f"panel_{pool_type}_all_history"
         cache_path = os.path.join(self.cache_dir, f"{cache_key}.pkl")
         
-        if use_cache and os.path.exists(cache_path):
+        need_download = False
+        
+        # 默认使用缓存，除非 refresh=True 或缓存不存在
+        if os.path.exists(cache_path) and not refresh:
             if verbose:
                 print(f"从缓存加载: {cache_path}")
-            return self._load_cache(cache_path)
-        
-        # 批量下载
-        if verbose:
-            print("下载中...")
-        
-        try:
-            data = yf.download(
-                symbols, 
-                start=start_date, 
-                end=end_date, 
-                progress=verbose,
-                threads=True
-            )
-        except Exception as e:
-            print(f"下载失败: {e}")
-            return self
-        
-        if data.empty:
-            print("无数据")
-            return self
-        
-        # 解析 MultiIndex 结构
-        if isinstance(data.columns, pd.MultiIndex):
-            # 多股票情况: columns = (Price, Symbol)
-            self.open_panel = data['Open']
-            self.high_panel = data['High']
-            self.low_panel = data['Low']
-            self.close_panel = data['Close']
-            self.volume_panel = data['Volume']
+            self._load_cache(cache_path)
         else:
-            # 单股票情况
-            symbol = symbols[0]
-            self.open_panel = data[['Open']].rename(columns={'Open': symbol})
-            self.high_panel = data[['High']].rename(columns={'High': symbol})
-            self.low_panel = data[['Low']].rename(columns={'Low': symbol})
-            self.close_panel = data[['Close']].rename(columns={'Close': symbol})
-            self.volume_panel = data[['Volume']].rename(columns={'Volume': symbol})
+            need_download = True
+            if refresh and verbose:
+                print("强制刷新缓存...")
+            elif not os.path.exists(cache_path) and verbose:
+                print("缓存不存在，需要下载...")
         
-        # 过滤数据不足的股票
-        valid_symbols = []
-        for symbol in self.close_panel.columns:
-            valid_days = self.close_panel[symbol].notna().sum()
-            if valid_days >= min_data_days:
-                valid_symbols.append(symbol)
-        
-        if len(valid_symbols) < len(self.close_panel.columns):
-            dropped = len(self.close_panel.columns) - len(valid_symbols)
+        if need_download:
+            # 使用 period='max' 下载全部可用历史数据
             if verbose:
-                print(f"过滤数据不足的股票: {dropped} 只")
+                print(f"下载中 (period='max', 全部历史)...")
             
-            self.open_panel = self.open_panel[valid_symbols]
-            self.high_panel = self.high_panel[valid_symbols]
-            self.low_panel = self.low_panel[valid_symbols]
-            self.close_panel = self.close_panel[valid_symbols]
-            self.volume_panel = self.volume_panel[valid_symbols]
+            try:
+                data = yf.download(
+                    symbols, 
+                    period='max',
+                    progress=verbose,
+                    threads=True
+                )
+            except Exception as e:
+                print(f"下载失败: {e}")
+                return self
+            
+            if data.empty:
+                print("无数据")
+                return self
+            
+            # 解析 MultiIndex 结构
+            if isinstance(data.columns, pd.MultiIndex):
+                # 多股票情况: columns = (Price, Symbol)
+                self.open_panel = data['Open']
+                self.high_panel = data['High']
+                self.low_panel = data['Low']
+                self.close_panel = data['Close']
+                self.volume_panel = data['Volume']
+            else:
+                # 单股票情况
+                self.open_panel = data[['Open']].rename(columns={'Open': symbols[0]})
+                self.high_panel = data[['High']].rename(columns={'High': symbols[0]})
+                self.low_panel = data[['Low']].rename(columns={'Low': symbols[0]})
+                self.close_panel = data[['Close']].rename(columns={'Close': symbols[0]})
+                self.volume_panel = data[['Volume']].rename(columns={'Volume': symbols[0]})
+            
+            # 过滤数据不足的股票
+            valid_symbols = []
+            for symbol in self.close_panel.columns:
+                if self.close_panel[symbol].notna().sum() >= min_data_days:
+                    valid_symbols.append(symbol)
+            
+            if len(valid_symbols) < len(self.close_panel.columns):
+                removed = len(self.close_panel.columns) - len(valid_symbols)
+                if verbose:
+                    print(f"过滤掉 {removed} 只数据不足的股票")
+                self.open_panel = self.open_panel[valid_symbols]
+                self.high_panel = self.high_panel[valid_symbols]
+                self.low_panel = self.low_panel[valid_symbols]
+                self.close_panel = self.close_panel[valid_symbols]
+                self.volume_panel = self.volume_panel[valid_symbols]
+            
+            # 计算日收益率
+            self.return_panel = self.close_panel.pct_change()
+            
+            # 更新元数据（全历史）
+            self.symbols = list(self.close_panel.columns)
+            self.dates = self.close_panel.index
+            
+            # 获取宏观数据（使用股票数据的实际日期范围）
+            actual_start = self.dates[0].strftime('%Y-%m-%d')
+            actual_end = self.dates[-1].strftime('%Y-%m-%d')
+            self.macro_data = self._fetch_macro_data(actual_start, actual_end, verbose, refresh=refresh)
+            
+            # 保存全历史缓存
+            self._save_cache(cache_path)
+            if verbose:
+                print(f"已缓存: {cache_path}")
         
-        # 计算日收益率
-        self.return_panel = self.close_panel.pct_change()
-        
-        # 更新元数据
-        self.symbols = list(self.close_panel.columns)
-        self.dates = self.close_panel.index
-        
-        # 获取宏观数据
-        self.macro_data = self._fetch_macro_data(start_date, end_date, verbose)
+        # 按用户请求的日期范围截取数据
+        self._slice_by_date(start_date, end_date)
         
         if verbose:
             print(f"有效股票: {len(self.symbols)} 只")
             print(f"数据天数: {len(self.dates)} 天")
             print(f"宏观指标: {len(self.macro_data)} 个")
         
-        # 保存缓存
-        if use_cache:
-            self._save_cache(cache_path)
-            if verbose:
-                print(f"已缓存: {cache_path}")
-        
         return self
+    
+    def _slice_by_date(self, start_date: str, end_date: str):
+        """按日期范围截取数据"""
+        mask = (self.close_panel.index >= start_date) & (self.close_panel.index <= end_date)
+        
+        self.open_panel = self.open_panel[mask]
+        self.high_panel = self.high_panel[mask]
+        self.low_panel = self.low_panel[mask]
+        self.close_panel = self.close_panel[mask]
+        self.volume_panel = self.volume_panel[mask]
+        self.return_panel = self.return_panel[mask]
+        
+        self.dates = self.close_panel.index
+        self.start_date = start_date
+        self.end_date = end_date
     
     def _save_cache(self, path: str):
         """保存缓存"""

@@ -664,7 +664,7 @@ class GPAlphaMinerV2:
                   start_date: str = None,
                   end_date: str = None,
                   train_ratio: float = 0.7,
-                  use_cache: bool = True,
+                  refresh: bool = False,
                   use_historical_cache: bool = False) -> 'GPAlphaMinerV2':
         """
         加载数据
@@ -674,7 +674,7 @@ class GPAlphaMinerV2:
             start_date: 开始日期
             end_date: 结束日期
             train_ratio: 训练集比例
-            use_cache: 是否使用缓存（仅 use_historical_cache=False 时有效）
+            refresh: 是否强制刷新缓存（默认 False，只用缓存不下载）
             use_historical_cache: 是否使用 HistoricalDataCache 缓存的历史数据
         
         Returns:
@@ -697,13 +697,13 @@ class GPAlphaMinerV2:
                 verbose=True
             )
         else:
-            # 原有方式：实时下载
+            # 默认使用缓存，refresh=True 时强制刷新
             self.data_manager = PanelDataManager()
             self.data_manager.fetch(
                 pool_type=pool_type,
                 start_date=start_date,
                 end_date=end_date,
-                use_cache=use_cache,
+                refresh=refresh,
                 verbose=True
             )
         

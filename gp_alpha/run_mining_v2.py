@@ -66,8 +66,8 @@ def main():
                         help='输出结果 JSON 路径')
     parser.add_argument('--plot', action='store_true',
                         help='绘制可视化图表')
-    parser.add_argument('--no-cache', action='store_true',
-                        help='不使用数据缓存')
+    parser.add_argument('--refresh', action='store_true',
+                        help='强制刷新数据缓存（默认使用缓存）')
     
     args = parser.parse_args()
     
@@ -109,7 +109,7 @@ def main():
         start_date=args.start,
         end_date=args.end,
         train_ratio=args.train_ratio,
-        use_cache=not args.no_cache
+        refresh=args.refresh
     )
     
     # 执行挖掘
