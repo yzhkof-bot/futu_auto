@@ -2,12 +2,28 @@
 cd /Users/windye/PycharmProjects/FUTU_auto
 source .venv/bin/activate
 
-echo "========== 抄底信号扫描 =========="
-python scan_nasdaq100.py
+# 创建日志目录
+LOG_DIR="reports/scan_logs"
+mkdir -p "$LOG_DIR"
+
+# 按日期生成日志文件名
+DATE=$(date +"%Y-%m-%d")
+LOG_FILE="$LOG_DIR/scan_${DATE}.log"
+
+# 执行扫描并同时输出到终端和日志文件（使用unbuffered模式）
+{
+    echo "扫描时间: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo ""
+    echo "========== 抄底信号扫描 =========="
+    python -u scan_nasdaq100.py
+
+    echo ""
+    echo "========== 追涨信号扫描 (Top5因子) =========="
+    python -u scan_nasdaq100_top5.py
+} 2>&1 | stdbuf -oL tee -a "$LOG_FILE"
 
 echo ""
-echo "========== 追涨信号扫描 (Top5因子) =========="
-python scan_nasdaq100_top5.py
+echo "结果已保存至: $LOG_FILE"
 
 #抄底回测脚本
 #cd /Users/windye/PycharmProjects/FUTU_auto && source .venv/bin/activate && python backtest_random_nasdaq.py 2>&1 | cat

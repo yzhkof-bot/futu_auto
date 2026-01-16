@@ -579,7 +579,19 @@ class PanelDataManager:
         - low_panel: DataFrame (日期 × 股票) 最低价
         - volume_panel: DataFrame (日期 × 股票) 成交量
         - return_panel: DataFrame (日期 × 股票) 日收益率
+        - macro_data: Dict[str, pd.Series] 宏观指标数据
     """
+    
+    # 宏观指标配置
+    MACRO_SYMBOLS = {
+        '^TNX': 'us10y',      # 10年期美债收益率
+        'DX-Y.NYB': 'dxy',    # 美元指数
+        '^RUT': 'rut',        # 罗素2000
+        '^GSPC': 'spx',       # 标普500
+        '^VIX': 'vix',        # 恐慌指数
+        'CL=F': 'oil',        # 原油期货
+        'GC=F': 'gold',       # 黄金期货
+    }
     
     def __init__(self, cache_dir: str = None):
         """
@@ -601,11 +613,70 @@ class PanelDataManager:
         self.volume_panel: Optional[pd.DataFrame] = None
         self.return_panel: Optional[pd.DataFrame] = None
         
+        # 宏观数据
+        self.macro_data: Dict[str, pd.Series] = {}
+        
         # 元数据
         self.symbols: List[str] = []
         self.dates: pd.DatetimeIndex = None
         self.start_date: str = None
         self.end_date: str = None
+    
+    def _fetch_macro_data(self, start_date: str, end_date: str, verbose: bool = True) -> Dict[str, pd.Series]:
+        """
+        获取宏观指标数据
+        
+        Args:
+            start_date: 开始日期
+            end_date: 结束日期
+            verbose: 是否打印进度
+        
+        Returns:
+            Dict[name, Series] 宏观数据字典
+        """
+        macro_cache_path = os.path.join(self.cache_dir, f"macro_{start_date}_{end_date}.pkl")
+        
+        # 尝试从缓存加载
+        if os.path.exists(macro_cache_path):
+            if verbose:
+                print("  加载宏观数据缓存...")
+            with open(macro_cache_path, 'rb') as f:
+                return pickle.load(f)
+        
+        if verbose:
+            print("  下载宏观指标数据...")
+        
+        macro_data = {}
+        symbols_list = list(self.MACRO_SYMBOLS.keys())
+        
+        try:
+            data = yf.download(symbols_list, start=start_date, end=end_date, progress=False)
+            
+            if not data.empty:
+                for symbol, name in self.MACRO_SYMBOLS.items():
+                    try:
+                        if isinstance(data.columns, pd.MultiIndex):
+                            close = data['Close'][symbol]
+                        else:
+                            close = data['Close']
+                        
+                        if close.notna().sum() > 50:
+                            macro_data[name] = close
+                            if verbose:
+                                print(f"    ✓ {name} ({symbol}): {close.notna().sum()} 天")
+                    except Exception as e:
+                        if verbose:
+                            print(f"    ✗ {name} ({symbol}): {str(e)[:30]}")
+        except Exception as e:
+            if verbose:
+                print(f"  宏观数据下载失败: {e}")
+        
+        # 保存缓存
+        if macro_data:
+            with open(macro_cache_path, 'wb') as f:
+                pickle.dump(macro_data, f)
+        
+        return macro_data
     
     def fetch(self, 
               symbols: List[str] = None,
@@ -718,9 +789,13 @@ class PanelDataManager:
         self.symbols = list(self.close_panel.columns)
         self.dates = self.close_panel.index
         
+        # 获取宏观数据
+        self.macro_data = self._fetch_macro_data(start_date, end_date, verbose)
+        
         if verbose:
             print(f"有效股票: {len(self.symbols)} 只")
             print(f"数据天数: {len(self.dates)} 天")
+            print(f"宏观指标: {len(self.macro_data)} 个")
         
         # 保存缓存
         if use_cache:
@@ -739,6 +814,7 @@ class PanelDataManager:
             'close_panel': self.close_panel,
             'volume_panel': self.volume_panel,
             'return_panel': self.return_panel,
+            'macro_data': self.macro_data,
             'symbols': self.symbols,
             'dates': self.dates,
             'start_date': self.start_date,
@@ -758,6 +834,7 @@ class PanelDataManager:
         self.close_panel = cache_data['close_panel']
         self.volume_panel = cache_data['volume_panel']
         self.return_panel = cache_data['return_panel']
+        self.macro_data = cache_data.get('macro_data', {})
         self.symbols = cache_data['symbols']
         self.dates = cache_data['dates']
         self.start_date = cache_data['start_date']
@@ -908,12 +985,133 @@ class PanelDataManager:
         features['rsi'] = (100 - (100 / (1 + rs))) / 50 - 1
         
         # ============================================================
+        # 第十类：宏观指标特征 - 相对强弱 & 动态相关性
+        # ============================================================
+        if self.macro_data:
+            stock_return = self.return_panel  # 个股日收益率
+            
+            # --- 10年期美债收益率 (^TNX) ---
+            if 'us10y' in self.macro_data:
+                us10y = self.macro_data['us10y'].reindex(self.dates).ffill()
+                # 美债收益率变化（核心！利率上升对科技股杀伤力大）
+                us10y_change = us10y.diff()
+                features['us10y_change'] = self._broadcast_to_panel(us10y_change)
+                # 美债收益率水平（归一化）
+                features['us10y_level'] = self._broadcast_to_panel(us10y / 10)  # 除以10归一化
+                # 个股与利率变化的动态相关性（利率敏感度）
+                features['rate_sensitivity'] = self._rolling_corr_with_macro(
+                    stock_return, us10y_change, window=20
+                )
+            
+            # --- 美元指数 (DX-Y.NYB) ---
+            if 'dxy' in self.macro_data:
+                dxy = self.macro_data['dxy'].reindex(self.dates).ffill()
+                dxy_return = dxy.pct_change()
+                # 美元变化
+                features['dxy_change'] = self._broadcast_to_panel(dxy_return)
+                # 个股与美元的动态相关性（抗美元 or 随美元）
+                features['dxy_sensitivity'] = self._rolling_corr_with_macro(
+                    stock_return, dxy_return, window=20
+                )
+            
+            # --- 罗素2000 (^RUT) vs 标普500 (^GSPC) ---
+            if 'rut' in self.macro_data and 'spx' in self.macro_data:
+                rut = self.macro_data['rut'].reindex(self.dates).ffill()
+                spx = self.macro_data['spx'].reindex(self.dates).ffill()
+                # Risk-On/Off 比率（罗素/标普）
+                risk_ratio = rut / spx
+                features['risk_on_off'] = self._broadcast_to_panel(
+                    risk_ratio / risk_ratio.rolling(20).mean() - 1
+                )
+                # 个股相对罗素2000（跑赢小盘？）
+                features['vs_rut'] = self.close_panel.div(rut, axis=0)
+                features['vs_rut'] = features['vs_rut'] / features['vs_rut'].rolling(20).mean() - 1
+                # 个股相对标普500
+                features['vs_spx'] = self.close_panel.div(spx, axis=0)
+                features['vs_spx'] = features['vs_spx'] / features['vs_spx'].rolling(20).mean() - 1
+            
+            # --- VIX 恐慌指数 ---
+            if 'vix' in self.macro_data:
+                vix = self.macro_data['vix'].reindex(self.dates).ffill()
+                # VIX 水平（归一化）
+                features['vix_level'] = self._broadcast_to_panel(vix / 50)  # 通常 10-50
+                # VIX 变化（恐慌加剧/缓解）
+                features['vix_change'] = self._broadcast_to_panel(vix.pct_change())
+                # 个股与 VIX 的相关性（避险属性）
+                features['vix_sensitivity'] = self._rolling_corr_with_macro(
+                    stock_return, vix.pct_change(), window=20
+                )
+            
+            # --- 原油 (CL=F) ---
+            if 'oil' in self.macro_data:
+                oil = self.macro_data['oil'].reindex(self.dates).ffill()
+                oil_return = oil.pct_change()
+                # 油价变化
+                features['oil_change'] = self._broadcast_to_panel(oil_return)
+                # 个股相对原油（能源敏感度）
+                features['vs_oil'] = self.close_panel.div(oil, axis=0)
+                features['vs_oil'] = features['vs_oil'] / features['vs_oil'].rolling(20).mean() - 1
+            
+            # --- 黄金 (GC=F) ---
+            if 'gold' in self.macro_data:
+                gold = self.macro_data['gold'].reindex(self.dates).ffill()
+                gold_return = gold.pct_change()
+                # 个股相对黄金（避险对比）
+                features['vs_gold'] = self.close_panel.div(gold, axis=0)
+                features['vs_gold'] = features['vs_gold'] / features['vs_gold'].rolling(20).mean() - 1
+                # 个股与黄金相关性
+                features['gold_sensitivity'] = self._rolling_corr_with_macro(
+                    stock_return, gold_return, window=20
+                )
+        
+        # ============================================================
         # 清理无穷值
         # ============================================================
         for name in features:
             features[name] = features[name].replace([np.inf, -np.inf], np.nan)
         
         return features
+    
+    def _broadcast_to_panel(self, series: pd.Series) -> pd.DataFrame:
+        """
+        将宏观指标 Series 广播为 Panel（每只股票相同值）
+        
+        Args:
+            series: 宏观指标时间序列
+        
+        Returns:
+            DataFrame (日期 × 股票)
+        """
+        return pd.DataFrame(
+            np.tile(series.values.reshape(-1, 1), (1, len(self.symbols))),
+            index=self.dates,
+            columns=self.symbols
+        )
+    
+    def _rolling_corr_with_macro(self, stock_return: pd.DataFrame, 
+                                  macro_change: pd.Series, 
+                                  window: int = 20) -> pd.DataFrame:
+        """
+        计算个股与宏观指标的滚动相关性
+        
+        Args:
+            stock_return: 个股收益率 Panel
+            macro_change: 宏观指标变化 Series
+            window: 滚动窗口
+        
+        Returns:
+            DataFrame (日期 × 股票) 相关性面板
+        """
+        # 对齐索引
+        macro_aligned = macro_change.reindex(self.dates).ffill()
+        
+        # 逐列计算滚动相关
+        corr_dict = {}
+        for symbol in self.symbols:
+            stock_ret = stock_return[symbol]
+            corr_dict[symbol] = stock_ret.rolling(window).corr(macro_aligned)
+        
+        return pd.DataFrame(corr_dict)
     
     def split_train_test(self, train_ratio: float = 0.7) -> Tuple['PanelDataManager', 'PanelDataManager']:
         """
@@ -940,6 +1138,7 @@ class PanelDataManager:
         train_dm.close_panel = self.close_panel.loc[train_dates]
         train_dm.volume_panel = self.volume_panel.loc[train_dates]
         train_dm.return_panel = self.return_panel.loc[train_dates]
+        train_dm.macro_data = self.macro_data  # 宏观数据共享（会按日期自动切分）
         train_dm.symbols = self.symbols
         train_dm.dates = train_dates
         train_dm.start_date = str(train_dates[0].date())
@@ -953,6 +1152,7 @@ class PanelDataManager:
         test_dm.close_panel = self.close_panel.loc[test_dates]
         test_dm.volume_panel = self.volume_panel.loc[test_dates]
         test_dm.return_panel = self.return_panel.loc[test_dates]
+        test_dm.macro_data = self.macro_data  # 宏观数据共享
         test_dm.symbols = self.symbols
         test_dm.dates = test_dates
         test_dm.start_date = str(test_dates[0].date())

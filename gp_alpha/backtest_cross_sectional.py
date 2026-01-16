@@ -49,6 +49,15 @@ def ts_min(panel, d=5):
     return panel.rolling(window=d, min_periods=1).min()
 
 
+def ts_decay(panel, d=10):
+    """衰减加权平均"""
+    weights = np.arange(1, d + 1)
+    return panel.rolling(window=d, min_periods=1).apply(
+        lambda x: np.average(x[-len(weights):], weights=weights[-len(x):]) if len(x) > 0 else np.nan,
+        raw=True
+    )
+
+
 def compute_gp_factor_1(close, high, low, volume):
     """
     因子 #4 (最佳): mul(neg(sub(delay5(min5(volume)), mean10(std10(return_5)))), mean5(neg(std10(min5(close)))))
@@ -81,10 +90,61 @@ def compute_gp_factor_3(close, high, low, volume):
     return ts_min(np.log(amount + 1e-10), 5)
 
 
+def compute_gp_factor_macro(close, high, low, volume):
+    """
+    新因子 (带宏观特征):
+    max2(delay5(max5(delay1(std20(std5(delay1(vwap)))))), 
+         max2(max5(delay5(hl_range)), 
+              div(add(std20(mean20(intraday_pos)), std20(hl_range)), 
+                  min5(min5(decay10(std5(gap)))))))
+    """
+    # 计算基础特征
+    vwap = (close * volume) / volume  # 简化版 VWAP
+    hl_range = (high - low) / close
+    intraday_pos = (close - low) / (high - low).replace(0, np.nan)
+    gap = close.shift(1).pct_change()  # 跳空
+    
+    # 左分支: delay5(max5(delay1(std20(std5(delay1(vwap))))))
+    delay1_vwap = ts_delay(vwap, 1)
+    std5_delay1_vwap = ts_std(delay1_vwap, 5)
+    std20_std5 = ts_std(std5_delay1_vwap, 20)
+    delay1_std20 = ts_delay(std20_std5, 1)
+    max5_delay1 = ts_max(delay1_std20, 5)
+    left = ts_delay(max5_delay1, 5)
+    
+    # 右分支
+    # max5(delay5(hl_range))
+    delay5_hl = ts_delay(hl_range, 5)
+    max5_delay5_hl = ts_max(delay5_hl, 5)
+    
+    # div(add(std20(mean20(intraday_pos)), std20(hl_range)), min5(min5(decay10(std5(gap)))))
+    mean20_intraday = ts_mean(intraday_pos, 20)
+    std20_mean20_intraday = ts_std(mean20_intraday, 20)
+    std20_hl = ts_std(hl_range, 20)
+    numerator = std20_mean20_intraday + std20_hl
+    
+    std5_gap = ts_std(gap, 5)
+    decay10_std5_gap = ts_decay(std5_gap, 10)
+    min5_decay = ts_min(decay10_std5_gap, 5)
+    min5_min5 = ts_min(min5_decay, 5)
+    
+    denominator = min5_min5.replace(0, np.nan)
+    div_result = numerator / denominator
+    
+    # max2 组合
+    right = np.maximum(max5_delay5_hl, div_result)
+    
+    # 最终 max2
+    factor = np.maximum(left, right)
+    
+    return factor
+
+
 GP_FACTORS = {
     'factor_1': {'name': 'GP最佳因子', 'compute': compute_gp_factor_1},
     'factor_2': {'name': '量价振幅因子', 'compute': compute_gp_factor_2},
     'factor_3': {'name': '最小成交额因子', 'compute': compute_gp_factor_3},
+    'factor_macro': {'name': 'GP宏观因子 (新)', 'compute': compute_gp_factor_macro},
 }
 
 
@@ -454,7 +514,7 @@ if __name__ == '__main__':
     parser.add_argument('--pool', '-p', default='nasdaq100', 
                         choices=['nasdaq100', 'bluechip', 'dow30', 'sp500_non_tech', 'out_of_sample', 'all'])
     parser.add_argument('--factor', '-f', default='factor_1',
-                        choices=['factor_1', 'factor_2', 'factor_3'])
+                        choices=['factor_1', 'factor_2', 'factor_3', 'factor_macro'])
     parser.add_argument('--holding', '-d', type=int, default=5, help='持有天数')
     parser.add_argument('--top', '-t', type=float, default=0.2, help='做多比例')
     parser.add_argument('--capital', '-c', type=float, default=100000, help='初始资金')

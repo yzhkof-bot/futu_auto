@@ -77,8 +77,8 @@ def main():
         args.generations = 15
         args.top = 10
     elif args.full:
-        args.population = 5000
-        args.generations = 100
+        args.population = 3000
+        args.generations = 50
         args.pool = 'all'
         args.top = 50
     
