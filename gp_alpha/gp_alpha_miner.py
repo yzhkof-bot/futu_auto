@@ -28,7 +28,7 @@ except ImportError:
 from .operators import (
     protected_div, protected_log, protected_sqrt,
     ts_delay, ts_delta, ts_mean, ts_std, ts_max, ts_min, ts_rank, ts_sum,
-    sign, abs_op, neg
+    abs_op, neg  # sign 已移除
 )
 from .fitness import calculate_ic, calculate_icir, evaluate_alpha, AlphaFitness
 
@@ -126,11 +126,7 @@ class GPAlphaMiner:
             arity=1
         )
         
-        self.gp_sign = make_function(
-            function=sign,
-            name='sign',
-            arity=1
-        )
+        # sign 已移除：会导致因子值只有 -1/0/+1，截面无法分层，Sharpe=nan
         
         self.gp_abs = make_function(
             function=abs_op,
@@ -223,7 +219,7 @@ class GPAlphaMiner:
             self.gp_div,
             self.gp_log,
             self.gp_sqrt,
-            self.gp_sign,
+            # self.gp_sign,  # 已移除：因子值离散化导致 Sharpe=nan
             self.gp_abs,
             self.gp_neg,
             self.gp_ts_delay_1,

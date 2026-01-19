@@ -1029,18 +1029,20 @@ class PanelDataManager:
         # ============================================================
         # 第十类：宏观指标特征 - 相对强弱 & 动态相关性
         # ============================================================
+        # 注意：只保留股票特有特征（截面有差异），移除纯广播的宏观因子
+        # 纯广播因子（如 us10y_change, vix_level）在截面上无差异，会导致：
+        # - pd.qcut 分层失败
+        # - IC 计算返回 NaN（Spearman 相关无法计算）
+        # - Sharpe 无法计算
+        # ============================================================
         if self.macro_data:
             stock_return = self.return_panel  # 个股日收益率
             
             # --- 10年期美债收益率 (^TNX) ---
             if 'us10y' in self.macro_data:
                 us10y = self.macro_data['us10y'].reindex(self.dates).ffill()
-                # 美债收益率变化（核心！利率上升对科技股杀伤力大）
                 us10y_change = us10y.diff()
-                features['us10y_change'] = self._broadcast_to_panel(us10y_change)
-                # 美债收益率水平（归一化）
-                features['us10y_level'] = self._broadcast_to_panel(us10y / 10)  # 除以10归一化
-                # 个股与利率变化的动态相关性（利率敏感度）
+                # 个股与利率变化的动态相关性（利率敏感度）- 股票特有
                 features['rate_sensitivity'] = self._rolling_corr_with_macro(
                     stock_return, us10y_change, window=20
                 )
@@ -1049,9 +1051,7 @@ class PanelDataManager:
             if 'dxy' in self.macro_data:
                 dxy = self.macro_data['dxy'].reindex(self.dates).ffill()
                 dxy_return = dxy.pct_change()
-                # 美元变化
-                features['dxy_change'] = self._broadcast_to_panel(dxy_return)
-                # 个股与美元的动态相关性（抗美元 or 随美元）
+                # 个股与美元的动态相关性（抗美元 or 随美元）- 股票特有
                 features['dxy_sensitivity'] = self._rolling_corr_with_macro(
                     stock_return, dxy_return, window=20
                 )
@@ -1060,26 +1060,17 @@ class PanelDataManager:
             if 'rut' in self.macro_data and 'spx' in self.macro_data:
                 rut = self.macro_data['rut'].reindex(self.dates).ffill()
                 spx = self.macro_data['spx'].reindex(self.dates).ffill()
-                # Risk-On/Off 比率（罗素/标普）
-                risk_ratio = rut / spx
-                features['risk_on_off'] = self._broadcast_to_panel(
-                    risk_ratio / risk_ratio.rolling(20).mean() - 1
-                )
-                # 个股相对罗素2000（跑赢小盘？）
+                # 个股相对罗素2000（跑赢小盘？）- 股票特有
                 features['vs_rut'] = self.close_panel.div(rut, axis=0)
                 features['vs_rut'] = features['vs_rut'] / features['vs_rut'].rolling(20).mean() - 1
-                # 个股相对标普500
+                # 个股相对标普500 - 股票特有
                 features['vs_spx'] = self.close_panel.div(spx, axis=0)
                 features['vs_spx'] = features['vs_spx'] / features['vs_spx'].rolling(20).mean() - 1
             
             # --- VIX 恐慌指数 ---
             if 'vix' in self.macro_data:
                 vix = self.macro_data['vix'].reindex(self.dates).ffill()
-                # VIX 水平（归一化）
-                features['vix_level'] = self._broadcast_to_panel(vix / 50)  # 通常 10-50
-                # VIX 变化（恐慌加剧/缓解）
-                features['vix_change'] = self._broadcast_to_panel(vix.pct_change())
-                # 个股与 VIX 的相关性（避险属性）
+                # 个股与 VIX 的相关性（避险属性）- 股票特有
                 features['vix_sensitivity'] = self._rolling_corr_with_macro(
                     stock_return, vix.pct_change(), window=20
                 )
@@ -1087,10 +1078,7 @@ class PanelDataManager:
             # --- 原油 (CL=F) ---
             if 'oil' in self.macro_data:
                 oil = self.macro_data['oil'].reindex(self.dates).ffill()
-                oil_return = oil.pct_change()
-                # 油价变化
-                features['oil_change'] = self._broadcast_to_panel(oil_return)
-                # 个股相对原油（能源敏感度）
+                # 个股相对原油（能源敏感度）- 股票特有
                 features['vs_oil'] = self.close_panel.div(oil, axis=0)
                 features['vs_oil'] = features['vs_oil'] / features['vs_oil'].rolling(20).mean() - 1
             
@@ -1098,10 +1086,10 @@ class PanelDataManager:
             if 'gold' in self.macro_data:
                 gold = self.macro_data['gold'].reindex(self.dates).ffill()
                 gold_return = gold.pct_change()
-                # 个股相对黄金（避险对比）
+                # 个股相对黄金（避险对比）- 股票特有
                 features['vs_gold'] = self.close_panel.div(gold, axis=0)
                 features['vs_gold'] = features['vs_gold'] / features['vs_gold'].rolling(20).mean() - 1
-                # 个股与黄金相关性
+                # 个股与黄金相关性 - 股票特有
                 features['gold_sensitivity'] = self._rolling_corr_with_macro(
                     stock_return, gold_return, window=20
                 )
