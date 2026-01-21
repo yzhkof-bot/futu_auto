@@ -717,67 +717,84 @@ class GPAlphaMinerV2:
     
     def _prepare_training_data(self, 
                                dm: PanelDataManager,
-                               forward_days: int = 1) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+                               forward_days: int = 1) -> Tuple[np.ndarray, np.ndarray, List[str], np.ndarray]:
         """
-        准备训练数据
+        准备训练数据（截面模式）
         
         将 Panel 数据转换为 gplearn 需要的格式：
-        - 按股票展开，每只股票的时序数据拼接
+        - 按日期展开，保留日期索引用于截面 IC 计算
         - X: (样本数, 特征数)
         - y: (样本数,) 未来收益
+        - date_indices: (样本数,) 日期索引，用于截面分组
         
         Args:
             dm: 数据管理器
             forward_days: 预测天数
         
         Returns:
-            (X, y, feature_names)
+            (X, y, feature_names, date_indices)
         """
         features = dm.get_feature_panels()
         forward_return = dm.get_forward_return(forward_days)
         
         feature_names = list(features.keys())
         
-        # 按股票拼接
+        # 按日期展开（保留截面结构）
         X_list = []
         y_list = []
+        date_idx_list = []
         
-        for symbol in dm.symbols:
-            # 提取该股票的所有特征
-            symbol_features = []
-            for fname in feature_names:
-                if symbol in features[fname].columns:
-                    symbol_features.append(features[fname][symbol].values)
+        for date_idx, date in enumerate(dm.dates):
+            for symbol in dm.symbols:
+                # 提取该股票在该日期的特征
+                row_features = []
+                valid = True
+                
+                for fname in feature_names:
+                    if symbol in features[fname].columns:
+                        val = features[fname].loc[date, symbol]
+                        if np.isnan(val):
+                            valid = False
+                            break
+                        row_features.append(val)
+                    else:
+                        valid = False
+                        break
+                
+                if not valid:
+                    continue
+                
+                # 未来收益
+                if symbol in forward_return.columns:
+                    ret = forward_return.loc[date, symbol]
+                    if np.isnan(ret):
+                        continue
                 else:
-                    symbol_features.append(np.full(len(dm.dates), np.nan))
-            
-            X_symbol = np.column_stack(symbol_features)
-            
-            # 未来收益
-            if symbol in forward_return.columns:
-                y_symbol = forward_return[symbol].values
-            else:
-                y_symbol = np.full(len(dm.dates), np.nan)
-            
-            # 过滤无效行
-            valid = ~(np.any(np.isnan(X_symbol), axis=1) | np.isnan(y_symbol))
-            
-            X_list.append(X_symbol[valid])
-            y_list.append(y_symbol[valid])
+                    continue
+                
+                X_list.append(row_features)
+                y_list.append(ret)
+                date_idx_list.append(date_idx)
         
-        X = np.vstack(X_list)
-        y = np.concatenate(y_list)
+        X = np.array(X_list)
+        y = np.array(y_list)
+        date_indices = np.array(date_idx_list)
         
-        return X, y, feature_names
+        return X, y, feature_names, date_indices
     
-    def _create_ic_fitness(self, y_true: np.ndarray) -> Callable:
+    def _create_cross_sectional_ic_fitness(self, date_indices: np.ndarray) -> Callable:
         """
-        创建 IC 适应度函数
+        创建截面 IC 适应度函数
+        
+        每天计算一个截面 IC，然后取均值
+        这样训练目标与评估目标一致
         
         注意：gplearn 的适应度函数需要最小化
         """
-        def ic_fitness(y, y_pred, sample_weight):
-            """计算负 IC（用于最小化）"""
+        unique_dates = np.unique(date_indices)
+        
+        def cs_ic_fitness(y, y_pred, sample_weight):
+            """计算负的平均截面 IC（用于最小化）"""
             from scipy import stats
             
             # 过滤无效值
@@ -785,15 +802,34 @@ class GPAlphaMinerV2:
             if np.sum(valid) < 50:
                 return 1.0  # 惩罚无效因子
             
-            try:
-                ic, _ = stats.spearmanr(y_pred[valid], y[valid])
-                if np.isnan(ic):
-                    return 1.0
-                return -abs(ic)  # 取绝对值，因为负 IC 也有价值
-            except:
+            # 按日期计算截面 IC
+            ic_list = []
+            for date_idx in unique_dates:
+                # 该日期的样本
+                mask = (date_indices == date_idx) & valid
+                if np.sum(mask) < 10:  # 每天至少10只股票
+                    continue
+                
+                y_date = y[mask]
+                y_pred_date = y_pred[mask]
+                
+                try:
+                    ic, _ = stats.spearmanr(y_pred_date, y_date)
+                    if not np.isnan(ic):
+                        ic_list.append(ic)
+                except:
+                    continue
+            
+            if len(ic_list) < 20:  # 至少20天有效
                 return 1.0
+            
+            mean_ic = np.mean(ic_list)
+            if np.isnan(mean_ic):
+                return 1.0
+            
+            return -abs(mean_ic)  # 取绝对值，因为负 IC 也有价值
         
-        return make_fitness(function=ic_fitness, greater_is_better=False)
+        return make_fitness(function=cs_ic_fitness, greater_is_better=False)
     
     def mine(self,
              forward_days: int = 1,
@@ -822,17 +858,21 @@ class GPAlphaMinerV2:
         print(f"预测天数: {forward_days}")
         print(f"返回因子: {top_n}")
         
-        # 准备训练数据
+        # 准备训练数据（截面模式）
         print("\n准备训练数据...")
-        X_train, y_train, feature_names = self._prepare_training_data(
+        X_train, y_train, feature_names, date_indices = self._prepare_training_data(
             self.train_dm, forward_days
         )
         print(f"训练样本: {len(X_train)}")
+        print(f"训练天数: {len(np.unique(date_indices))}")
         print(f"特征数量: {len(feature_names)}")
         print(f"特征列表: {feature_names}")
         
-        # 创建适应度函数
-        fitness = self._create_ic_fitness(y_train)
+        # 保存 date_indices 供后续使用
+        self._train_date_indices = date_indices
+        
+        # 创建截面 IC 适应度函数
+        fitness = self._create_cross_sectional_ic_fitness(date_indices)
         
         # 创建 GP 模型
         print("\n开始进化...")
@@ -1069,6 +1109,13 @@ class GPAlphaMinerV2:
     
     def save(self, filepath: str):
         """保存模型"""
+        import os
+        
+        # 自动创建目录
+        dirpath = os.path.dirname(filepath)
+        if dirpath and not os.path.exists(dirpath):
+            os.makedirs(dirpath)
+        
         save_data = {
             'best_factors': [
                 {k: v for k, v in f.items() if k != 'program'}
