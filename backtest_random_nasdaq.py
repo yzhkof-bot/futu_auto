@@ -40,7 +40,7 @@ def backtest_with_stop(ticker: str, initial_capital: float = 5000,
     带止盈止损的回测
     """
     print(f"下载 {ticker} 数据...")
-    data = yf.download(ticker, start='2020-01-01', end='2025-12-31', progress=False)
+    data = yf.download(ticker, start='2020-01-01', progress=False)  # 下载到最新数据
     
     if data.empty:
         print(f"{ticker} 数据为空")

@@ -10,16 +10,9 @@ mkdir -p "$LOG_DIR"
 DATE=$(date +"%Y-%m-%d")
 LOG_FILE="$LOG_DIR/scan_${DATE}.log"
 
-# 执行扫描并同时输出到终端和日志文件（使用unbuffered模式）
+# 执行统一扫描（只下载一次数据）
 {
-    echo "扫描时间: $(date '+%Y-%m-%d %H:%M:%S')"
-    echo ""
-    echo "========== 抄底信号扫描 =========="
-    python -u scan_nasdaq100.py
-
-    echo ""
-    echo "========== 追涨信号扫描 (Top5因子) =========="
-    python -u scan_nasdaq100_top5.py
+    python -u scan_combined.py
 } 2>&1 | stdbuf -oL tee -a "$LOG_FILE"
 
 echo ""
@@ -31,7 +24,6 @@ echo "结果已保存至: $LOG_FILE"
 #cd /Users/windye/PycharmProjects/FUTU_auto && source .venv/bin/activate && python backtest_top5_strategy.py 2>&1 | cat
 #卖点回测脚本
 #cd /Users/windye/PycharmProjects/FUTU_auto && source .venv/bin/activate && python backtest_ultra_elite_sell_strategy.py AAPL 15 7
-
 
 
 #mul(neg(sub(delay5(min5(volume)), mean10(std10(return_5)))), mean5(neg(std10(min5(close)))))

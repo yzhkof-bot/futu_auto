@@ -20,7 +20,7 @@ def main():
     
     if buy_signals:
         print(f"\n{'='*50}")
-        print(f"发现 {len(buy_signals)} 个买点")
+        print(f"发现 {len(buy_signals)} 个抄底买点")
         print(f"{'='*50}")
         
         for ticker, signal in buy_signals:
