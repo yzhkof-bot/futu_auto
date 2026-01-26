@@ -1,6 +1,15 @@
 #!/bin/bash
-cd /Users/windye/PycharmProjects/FUTU_auto
-source .venv/bin/activate
+cd "$(dirname "$0")"
+
+# 自动检测虚拟环境目录
+if [ -d ".venv" ]; then
+    source .venv/bin/activate
+elif [ -d "venv" ]; then
+    source venv/bin/activate
+else
+    echo "错误: 找不到虚拟环境 (.venv 或 venv)"
+    exit 1
+fi
 
 # 创建日志目录
 LOG_DIR="reports/scan_logs"
